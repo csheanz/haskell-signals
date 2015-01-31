@@ -21,7 +21,6 @@ import qualified Data.Map as M
 slot0 :: Integer
 slot0 = fromIntegral (minBound :: Int)
 
--- mutable counter to track slot block count
 newtype Counter = Counter (IORef Int)
 newCounter = Counter <$> newIORef 0
 inc (Counter ref) = atomicModifyIORef ref $ \i -> let j = succ i in (j, j)
@@ -71,28 +70,26 @@ withBlock c = bracket_ (block c) (unblock c)
 withUnblock :: Connection -> IO a -> IO a
 withUnblock c = bracket_ (unblock c) (block c)
 
-apply_ z (Signal' ref) = do
+emit :: (a -> IO b) -> Signal a -> IO [b]
+emit z (Signal' ref) = do
+    Sig _ m <- readIORef ref
+    go $ M.toList m
+    where
+        go [] = return []
+        go ((_, Slot x f) : ss) = do
+            blocked <- gtz x
+            if blocked
+                then go ss
+                else do
+                    a <- z f
+                    b <- go ss
+                    return (a:b)
+
+emit_ :: (a -> IO b) -> Signal a -> IO ()
+emit_ z (Signal' ref) = do
     Sig _ m <- readIORef ref
     Data.Foldable.mapM_ go m
     where
         go (Slot x f) = do
             blocked <- gtz x
-            when (not blocked) (z f)
-
-apply z (Signal' ref) = do
-    Sig _ m <- readIORef ref
-    Data.Traversable.mapM go m
-    where
-        go (Slot x f) = do
-            blocked <- gtz x
-            if blocked
-                then return Nothing
-                else Just <$> z f
-
-emit :: Signal (IO a) -> IO [a]
-emit sig = do
-    m <- apply id sig
-    return $ catMaybes $ map snd $ M.toList $ m
-
-emit_ :: Signal (IO a) -> IO ()
-emit_ = apply_ void
+            when (not blocked) (z f >> return ())
